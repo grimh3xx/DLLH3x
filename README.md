@@ -1,25 +1,17 @@
-<h1 align="center">DLLH3x</h1>
+<img src="docs/banner.svg" alt="DLLH3x" width="100%">
 
-<p align="center">
-  <b>Read-only DLL search-order / hijacking auditor for Windows PE binaries.</b><br>
-  Finds where the dynamic loader could resolve a dependency from a writable
-  directory — and tells you how to fix it. Diagnosis only, never weaponization.
-</p>
+[![build](https://img.shields.io/github/actions/workflow/status/grimh3xx/DLLH3x/build.yml?branch=main&style=flat-square&labelColor=111826&label=build)](https://github.com/grimh3xx/DLLH3x/actions)
+[![license](https://img.shields.io/github/license/grimh3xx/DLLH3x?style=flat-square&labelColor=111826&color=22D3EE)](LICENSE)
+![Rust](https://img.shields.io/badge/Rust-2021-3B82F6?style=flat-square&labelColor=111826)
+![platform](https://img.shields.io/badge/Windows-x64%20%7C%20x86-22D3EE?style=flat-square&labelColor=111826)
+![read-only](https://img.shields.io/badge/read--only-no%20exploitation-34D399?style=flat-square&labelColor=111826)
 
-<p align="center">
-  <img src="https://img.shields.io/badge/rust-1.74%2B-ce422b?style=flat-square&logo=rust&logoColor=white" alt="rust">
-  <img src="https://img.shields.io/badge/platform-Windows%20%7C%20WSL%20%7C%20Linux-0078D6?style=flat-square&logo=windows&logoColor=white" alt="platform">
-  <img src="https://img.shields.io/badge/scope-read--only%20%7C%20defensive-3fb950?style=flat-square" alt="read-only">
-  <img src="https://img.shields.io/badge/output-terminal%20%2B%20JSON-39c5cf?style=flat-square" alt="output">
-  <img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="license">
-  <img src="https://github.com/grimh3xx/DLLH3x/actions/workflows/ci.yml/badge.svg" alt="ci">
-</p>
+**A read-only DLL search-order / hijacking auditor for Windows PE binaries, in Rust.**
+It finds where the dynamic loader could resolve a dependency from a writable
+directory — and tells you how to fix it. Strictly **diagnosis**: it never
+generates, patches, plants, proxies, or executes a module.
 
-<p align="center">
-  <img src="assets/demo.svg" alt="DLLH3x demo" width="760">
-</p>
-
----
+<p align="center"><img src="docs/demo.svg" alt="dllh3x demo" width="100%"></p>
 
 ## What it is
 
@@ -42,6 +34,11 @@ in this repository by design.
   side-loading surfaces are not missed.
 - **Real Windows search-order model** — classifies every module against
   KnownDLLs, the API-set schema, and System32.
+- **Bitness-aware resolution** — x86 targets are resolved against **SysWOW64**,
+  x64 against **System32**, based on the PE machine type (`--wow64-root`).
+- **SxS / manifest awareness** — reads the embedded `RT_MANIFEST` or external
+  `.manifest`, so `<file>`-redirected assemblies are recognized instead of being
+  mis-flagged as phantoms — and still flagged when the directory is writable.
 - **Live or baseline system index** — reads a real `System32` on Windows (or via
   `--system-root` from WSL); falls back to a labelled built-in baseline off-Windows.
 - **Writability probe** — flags when the binary's directory is writable, which is
@@ -107,8 +104,9 @@ assigns a classification:
 | `api-set`      | `api-ms-win-*` / `ext-ms-*`, resolved by the API-set schema | info |
 | `system-dll`   | Present in System32; loaded there under SafeDllSearchMode | info *(low if dir writable)* |
 | `app-local`    | A private module shipped next to the binary | low |
+| `manifest-redirected` | Pinned app-local by a SxS manifest `<file>` entry | low → **medium** if writable, **high** if the declared file is missing |
 | `shadowing`    | App-local module whose name also exists in System32 | high → **critical** if writable |
-| `phantom`      | **Not** in System32 and **absent** from the app dir — an empty slot | high → **critical** if writable |
+| `phantom`      | **Not** in the system dir and **absent** from the app dir — an empty slot | high → **critical** if writable |
 
 The application directory is first in the search order for the executable's own
 imports, so a **writable** directory is what escalates a `phantom` or `shadowing`
@@ -138,6 +136,7 @@ it. A clean, fully-system-resolved binary scores near zero.
   "index_source": "live",
   "system_dir": "C:\\Windows\\System32",
   "wow64_resolution": false,
+  "manifest": { "source": "embedded", "redirected_files": [], "dependencies": ["Microsoft.Windows.Common-Controls"] },
   "surface_score": 100,
   "counts": { "critical": 1, "high": 0, "medium": 0, "low": 34, "info": 22, "total": 57 },
   "findings": [
@@ -169,8 +168,7 @@ project.
 ## Roadmap
 
 - [x] SysWOW64 resolution for 32-bit targets
-- [ ] SxS / activation-context (manifest) redirection awareness
-- [ ] Application-manifest `<file>` redirection parsing
+- [x] SxS / activation-context (manifest) `<file>` redirection awareness
 - [ ] SARIF output for code-scanning integrations
 - [ ] Optional authenticode signature check on resolved modules
 

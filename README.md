@@ -72,7 +72,8 @@ dllh3x <PATH> [OPTIONS]
   -j, --json              emit JSON instead of the terminal report
   -o, --output <FILE>     write the (JSON) report to a file
       --min-risk <LEVEL>  only show findings >= info|low|medium|high|critical  [default: low]
-      --system-root <DIR> use a live System32 (e.g. /mnt/c/Windows/System32 on WSL)
+      --system-root <DIR> live System32 for 64-bit targets (WSL: /mnt/c/Windows/System32)
+      --wow64-root <DIR>  live SysWOW64 for 32-bit targets (WSL: /mnt/c/Windows/SysWOW64)
       --fail-on <LEVEL>   exit non-zero if any finding reaches this risk (CI gate)
   -v, --verbose           show every reason and remediation line
       --no-color          disable ANSI colors
@@ -84,8 +85,9 @@ dllh3x <PATH> [OPTIONS]
 # Audit one binary, show only real exposure
 dllh3x "C:\Program Files\Vendor\app.exe" --min-risk high
 
-# From WSL, point the index at the live Windows System32
-dllh3x ./app.exe --system-root /mnt/c/Windows/System32 -v
+# From WSL, point the index at the live Windows System32 (+ SysWOW64 for x86)
+dllh3x ./app.exe --system-root /mnt/c/Windows/System32 \
+                 --wow64-root  /mnt/c/Windows/SysWOW64 -v
 
 # Sweep an install tree and fail a pipeline on any critical finding
 dllh3x "C:\Program Files\Vendor" --recursive --fail-on critical
@@ -112,6 +114,13 @@ The application directory is first in the search order for the executable's own
 imports, so a **writable** directory is what escalates a `phantom` or `shadowing`
 candidate to **critical**: a non-privileged user could simply drop a file there.
 
+**Bitness matters.** A 32-bit (x86) image on 64-bit Windows resolves its system
+DLLs from **SysWOW64**, not System32. DLLH3x detects the target's machine type
+and resolves each binary against the correct system directory — pass
+`--wow64-root` so x86 targets are checked against a real SysWOW64 index instead
+of falling back to the System32 name set. Findings tagged `[wow64]` were resolved
+this way.
+
 ### Risk scoring
 
 Each finding carries a score; the binary's **surface score** (0–100) is weighted
@@ -127,6 +136,8 @@ it. A clean, fully-system-resolved binary scores near zero.
   "imphash": "8cabe7ef2165f2dc825863391fe3251c",
   "app_dir_writable": true,
   "index_source": "live",
+  "system_dir": "C:\\Windows\\System32",
+  "wow64_resolution": false,
   "surface_score": 100,
   "counts": { "critical": 1, "high": 0, "medium": 0, "low": 34, "info": 22, "total": 57 },
   "findings": [
@@ -157,7 +168,7 @@ project.
 
 ## Roadmap
 
-- [ ] SysWOW64 resolution for 32-bit targets
+- [x] SysWOW64 resolution for 32-bit targets
 - [ ] SxS / activation-context (manifest) redirection awareness
 - [ ] Application-manifest `<file>` redirection parsing
 - [ ] SARIF output for code-scanning integrations

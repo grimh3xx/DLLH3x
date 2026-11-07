@@ -20,11 +20,30 @@ pub fn print_terminal(report: &Report, min_risk: Risk, verbose: bool) {
         Some(false) => "not writable".green().to_string(),
         None => "unknown".yellow().to_string(),
     };
-    let src = match report.index_source {
-        IndexSource::Live => "live System32".green().to_string(),
-        IndexSource::Baseline => "baseline (no live System32)".yellow().to_string(),
+    // Name the directory set actually used: SysWOW64 only when a real WoW64
+    // index resolved an x86 target, otherwise the System32 set (x64, or x86
+    // falling back to System32 when no SysWOW64 index was loaded).
+    let sysdir = if report.wow64_resolution {
+        "SysWOW64"
+    } else {
+        "System32"
     };
-    println!("    app dir: {writable}   system index: {src}");
+    let src = match report.index_source {
+        IndexSource::Live => format!(
+            "live {} ({})",
+            sysdir,
+            report.system_dir.as_deref().unwrap_or("?")
+        )
+        .green()
+        .to_string(),
+        IndexSource::Baseline => "baseline (no live system dir)".yellow().to_string(),
+    };
+    let wow = if report.wow64_resolution {
+        "  [wow64]".bright_magenta().to_string()
+    } else {
+        String::new()
+    };
+    println!("    app dir: {writable}   system index: {src}{wow}");
 
     let shown: Vec<_> = report
         .findings

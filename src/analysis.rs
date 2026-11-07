@@ -97,6 +97,11 @@ pub struct Report {
     /// a proxy for "an attacker could plant a DLL here".
     pub app_dir_writable: Option<bool>,
     pub index_source: IndexSource,
+    /// The live system directory used to resolve this binary's imports
+    /// (System32 for x64, SysWOW64 for x86), or null when the baseline was used.
+    pub system_dir: Option<String>,
+    /// True when a 32-bit target was resolved against a real SysWOW64 index.
+    pub wow64_resolution: bool,
     pub surface_score: u32,
     pub counts: Counts,
     pub findings: Vec<Finding>,
@@ -124,11 +129,16 @@ pub fn analyze(
 ) -> Report {
     let mut findings = Vec::new();
 
+    // Pick the system directory the loader would actually use for this target:
+    // SysWOW64 for a 32-bit image, System32 for a 64-bit one.
+    let arch_index = index.arch_index(pe.is_64);
+    let wow64_resolution = !pe.is_64 && index.syswow64().is_some();
+
     for dll in &pe.imports {
         let name = &dll.name;
         let lower = name.to_ascii_lowercase();
         let present_locally = app_dir_files.contains(&lower);
-        let in_system = index.in_system32(name);
+        let in_system = arch_index.contains(name);
 
         let (classification, mut risk, mut reasons) = if index.is_api_set(name) {
             (
@@ -163,14 +173,22 @@ pub fn analyze(
             (
                 Classification::SystemDll,
                 Risk::Info,
-                vec!["Present in System32; loaded from there under SafeDllSearchMode.".to_string()],
+                vec![format!(
+                    "Present in {sysdir}; loaded from there under SafeDllSearchMode.",
+                    sysdir = if pe.is_64 {
+                        "System32"
+                    } else {
+                        "the system directory (SysWOW64)"
+                    }
+                )],
             )
         } else {
             (
                     Classification::PhantomDll,
                     Risk::High,
                     vec![format!(
-                        "{name} is not in System32 and is absent from the application directory — the application directory is searched first, leaving an empty slot."
+                        "{name} is not in the system directory ({sysdir}) and is absent from the application directory — the application directory is searched first, leaving an empty slot.",
+                        sysdir = if pe.is_64 { "System32" } else { "SysWOW64" }
                     )],
                 )
         };
@@ -254,7 +272,9 @@ pub fn analyze(
         is_64: pe.is_64,
         imphash: pe.imphash.clone(),
         app_dir_writable: writable,
-        index_source: index.source,
+        index_source: arch_index.source,
+        system_dir: arch_index.dir_label(),
+        wow64_resolution,
         surface_score: surface_score(&counts),
         counts,
         findings,

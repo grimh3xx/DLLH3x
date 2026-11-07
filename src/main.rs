@@ -56,20 +56,35 @@ fn main() -> ExitCode {
         print_banner();
     }
 
-    let index = SystemIndex::load(args.system_root.as_deref().map(Path::new));
+    let index = SystemIndex::load(
+        args.system_root.as_deref().map(Path::new),
+        args.wow64_root.as_deref().map(Path::new),
+    );
     if !args.json {
-        let where_from = index
-            .system_root
-            .as_deref()
-            .map(|p| p.display().to_string())
+        let sys32 = index.system32();
+        let where_from = sys32
+            .dir_label()
             .unwrap_or_else(|| "built-in baseline".to_string());
         println!(
-            "  {} system index: {} known-dlls, {} system modules  ({})",
+            "  {} system index: {} known-dlls, {} System32 modules  ({})",
             "·".dimmed(),
             index.known_count(),
-            index.system_count(),
+            sys32.len(),
             where_from.dimmed(),
         );
+        match index.syswow64() {
+            Some(w) => println!(
+                "  {} wow64 index:  {} SysWOW64 modules  ({})  — used for x86 targets",
+                "·".dimmed(),
+                w.len(),
+                w.dir_label().unwrap_or_default().dimmed(),
+            ),
+            None => println!(
+                "  {} wow64 index:  {} — x86 targets fall back to the System32 set",
+                "·".dimmed(),
+                "not loaded".yellow(),
+            ),
+        }
     }
 
     let root = PathBuf::from(&args.path);

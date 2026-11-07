@@ -33,9 +33,14 @@ pub struct Cli {
     pub min_risk: String,
 
     /// Point the system index at a live System32 directory (e.g. for WSL:
-    /// /mnt/c/Windows/System32). Overrides the built-in baseline.
+    /// /mnt/c/Windows/System32). Used to resolve 64-bit targets.
     #[arg(long, value_name = "DIR")]
     pub system_root: Option<String>,
+
+    /// Point the index at a live SysWOW64 directory (e.g. for WSL:
+    /// /mnt/c/Windows/SysWOW64). Used to resolve 32-bit (x86) targets.
+    #[arg(long, value_name = "DIR")]
+    pub wow64_root: Option<String>,
 
     /// Show every reason and remediation line per finding.
     #[arg(short, long)]

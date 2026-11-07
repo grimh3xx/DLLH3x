@@ -9,6 +9,7 @@ use std::collections::HashSet;
 
 use serde::Serialize;
 
+use crate::manifest::Manifest;
 use crate::pe::{ImportKind, PeInfo};
 use crate::sysindex::{IndexSource, SystemIndex};
 
@@ -57,6 +58,9 @@ pub enum Classification {
     AppLocalDll,
     /// App-local module whose name shadows a System32 module (redirection).
     ShadowingDll,
+    /// Redirected to the application directory by a SxS / activation-context
+    /// manifest `<file>` entry — an intended private assembly.
+    ManifestRedirected,
     /// Not found in System32 and absent from the app dir: an empty slot an
     /// attacker can fill — the classic phantom / search-order hijack.
     PhantomDll,
@@ -70,6 +74,7 @@ impl Classification {
             Classification::SystemDll => "system-dll",
             Classification::AppLocalDll => "app-local",
             Classification::ShadowingDll => "shadowing",
+            Classification::ManifestRedirected => "manifest-redirected",
             Classification::PhantomDll => "phantom",
         }
     }
@@ -102,9 +107,18 @@ pub struct Report {
     pub system_dir: Option<String>,
     /// True when a 32-bit target was resolved against a real SysWOW64 index.
     pub wow64_resolution: bool,
+    /// Summary of the SxS / activation-context manifest, if one was found.
+    pub manifest: Option<ManifestSummary>,
     pub surface_score: u32,
     pub counts: Counts,
     pub findings: Vec<Finding>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ManifestSummary {
+    pub source: crate::manifest::ManifestSource,
+    pub redirected_files: Vec<String>,
+    pub dependencies: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -126,6 +140,7 @@ pub fn analyze(
     index: &SystemIndex,
     app_dir_files: &HashSet<String>,
     writable: Option<bool>,
+    manifest: Option<&Manifest>,
 ) -> Report {
     let mut findings = Vec::new();
 
@@ -155,6 +170,26 @@ pub fn analyze(
                     Risk::Info,
                     vec!["Listed in KnownDLLs; always mapped from System32 regardless of the app directory.".to_string()],
                 )
+        } else if manifest.map(|m| m.redirects(name)).unwrap_or(false) {
+            // A SxS manifest <file> entry pins this module to the application
+            // directory via the activation context, ahead of the search order.
+            if present_locally {
+                (
+                    Classification::ManifestRedirected,
+                    Risk::Low,
+                    vec![format!(
+                        "{name} is redirected to the application directory by the SxS manifest — an intended private assembly."
+                    )],
+                )
+            } else {
+                (
+                    Classification::ManifestRedirected,
+                    Risk::High,
+                    vec![format!(
+                        "{name} is declared as a manifest <file> redirect but is absent from the application directory — the declared private assembly is missing, so the slot can be filled."
+                    )],
+                )
+            }
         } else if present_locally && in_system {
             (
                     Classification::ShadowingDll,
@@ -223,6 +258,17 @@ pub fn analyze(
                         .to_string(),
                 );
             }
+            (Classification::ManifestRedirected, Some(true)) => {
+                // Still redirected, but a writable dir means the pinned
+                // private assembly can be swapped out.
+                if risk < Risk::Medium {
+                    risk = Risk::Medium;
+                }
+                reasons.push(
+                    "The application directory is writable, so even the manifest-pinned assembly can be replaced."
+                        .to_string(),
+                );
+            }
             _ => {}
         }
 
@@ -266,6 +312,16 @@ pub fn analyze(
     }
     counts.total = findings.len();
 
+    let manifest_summary = manifest.map(|m| {
+        let mut files: Vec<String> = m.files.iter().cloned().collect();
+        files.sort();
+        ManifestSummary {
+            source: m.source,
+            redirected_files: files,
+            dependencies: m.dependencies.clone(),
+        }
+    });
+
     Report {
         target: pe.path.display().to_string(),
         arch: pe.machine.clone(),
@@ -275,6 +331,7 @@ pub fn analyze(
         index_source: arch_index.source,
         system_dir: arch_index.dir_label(),
         wow64_resolution,
+        manifest: manifest_summary,
         surface_score: surface_score(&counts),
         counts,
         findings,
@@ -321,6 +378,10 @@ fn remediation_for(c: Classification, name: &str) -> Vec<String> {
         Classification::ShadowingDll => vec![
             format!("Rename or remove the app-local {name} so it cannot shadow the System32 module, or load the system copy by full path."),
             "Enable a packaged/app-local redirection manifest only for modules you intend to redirect.".to_string(),
+        ],
+        Classification::ManifestRedirected => vec![
+            "Restrict write access to the install directory so the manifest-pinned assembly cannot be swapped.".to_string(),
+            format!("Sign and verify {name}, and ship the declared <file> so the redirect never falls back to the search order."),
         ],
         Classification::PhantomDll => vec![
             format!("Do not import {name} by bare name; resolve it with an explicit, validated path."),

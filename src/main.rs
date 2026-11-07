@@ -9,6 +9,7 @@
 
 mod analysis;
 mod cli;
+mod manifest;
 mod pe;
 mod report;
 mod sysindex;
@@ -115,8 +116,15 @@ fn main() -> ExitCode {
         let dir = target.parent().unwrap_or(Path::new("."));
         let app_dir_files = list_dir_lower(dir);
         let writable = probe_writable(dir);
+        let manifest = manifest::load(target);
 
-        reports.push(analyze(&pe, &index, &app_dir_files, writable));
+        reports.push(analyze(
+            &pe,
+            &index,
+            &app_dir_files,
+            writable,
+            manifest.as_ref(),
+        ));
     }
 
     if reports.is_empty() {

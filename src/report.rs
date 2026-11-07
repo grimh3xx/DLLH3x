@@ -45,6 +45,19 @@ pub fn print_terminal(report: &Report, min_risk: Risk, verbose: bool) {
     };
     println!("    app dir: {writable}   system index: {src}{wow}");
 
+    if let Some(m) = &report.manifest {
+        let origin = match m.source {
+            crate::manifest::ManifestSource::Embedded => "embedded",
+            crate::manifest::ManifestSource::External => "external",
+        };
+        println!(
+            "    manifest: {} — {} redirected file(s), {} SxS dependenc(ies)",
+            origin.bright_magenta(),
+            m.redirected_files.len().to_string().bold(),
+            m.dependencies.len(),
+        );
+    }
+
     let shown: Vec<_> = report
         .findings
         .iter()

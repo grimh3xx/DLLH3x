@@ -241,6 +241,9 @@ mod tests {
         assert!(!idx.is_api_set("ffmpeg.dll"));
     }
 
+    // Off-Windows only: on Windows `load` reads the real System32/SysWOW64,
+    // so there IS a live WoW64 index and this fallback path does not apply.
+    #[cfg(not(windows))]
     #[test]
     fn falls_back_to_system32_when_no_wow64() {
         // With no live dirs, 32-bit queries must still resolve via the

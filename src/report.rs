@@ -9,16 +9,28 @@ use crate::sysindex::IndexSource;
 pub fn print_terminal(report: &Report, min_risk: Risk, verbose: bool) {
     println!();
     println!("  {} {}", "▸".bright_cyan(), report.target.bold());
+    let sig = if report.target_signed {
+        "signed".green().to_string()
+    } else {
+        "unsigned".yellow().to_string()
+    };
     println!(
-        "    arch: {}   imphash: {}",
+        "    arch: {}   imphash: {}   image: {}",
         report.arch.bright_white(),
-        report.imphash.as_deref().unwrap_or("-").dimmed()
+        report.imphash.as_deref().unwrap_or("-").dimmed(),
+        sig,
     );
 
-    let writable = match report.app_dir_writable {
-        Some(true) => "writable".bright_red().to_string(),
-        Some(false) => "not writable".green().to_string(),
-        None => "unknown".yellow().to_string(),
+    let writable = if !report.app_dir_writers.is_empty() {
+        format!("writable by {}", report.app_dir_writers.join(", "))
+            .bright_red()
+            .to_string()
+    } else {
+        match report.app_dir_writable {
+            Some(true) => "writable".bright_red().to_string(),
+            Some(false) => "not writable".green().to_string(),
+            None => "unknown".yellow().to_string(),
+        }
     };
     // Name the directory set actually used: SysWOW64 only when a real WoW64
     // index resolved an x86 target, otherwise the System32 set (x64, or x86
@@ -43,7 +55,12 @@ pub fn print_terminal(report: &Report, min_risk: Risk, verbose: bool) {
     } else {
         String::new()
     };
-    println!("    app dir: {writable}   system index: {src}{wow}");
+    let dotlocal = if report.dotlocal {
+        "   dotlocal: present".bright_magenta().to_string()
+    } else {
+        String::new()
+    };
+    println!("    app dir: {writable}   system index: {src}{wow}{dotlocal}");
 
     if let Some(m) = &report.manifest {
         let origin = match m.source {
@@ -79,6 +96,33 @@ pub fn print_terminal(report: &Report, min_risk: Risk, verbose: bool) {
                 format!("[{}]", f.classification.label()).dimmed(),
                 format!("({})", f.kind).dimmed(),
             );
+            // exploitability + ATT&CK line
+            let expl = format!("{:.2}", f.exploitability);
+            let expl = match f.confidence {
+                "high" => expl.bright_red().to_string(),
+                "medium" => expl.yellow().to_string(),
+                _ => expl.bright_blue().to_string(),
+            };
+            let attack = if f.attack.is_empty() {
+                String::new()
+            } else {
+                format!("   att&ck: {}", f.attack.join(", "))
+            };
+            let signed = match f.signed {
+                Some(false) => "   unsigned".yellow().to_string(),
+                Some(true) => "   signed".dimmed().to_string(),
+                None => String::new(),
+            };
+            if f.exploitability > 0.0 {
+                println!(
+                    "        {} {} ({}){}{}",
+                    "exploitability:".dimmed(),
+                    expl,
+                    f.confidence.dimmed(),
+                    attack.dimmed(),
+                    signed,
+                );
+            }
             if verbose {
                 for r in &f.reasons {
                     println!("        {} {}", "·".dimmed(), r);

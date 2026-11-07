@@ -88,6 +88,15 @@ pub struct Finding {
     pub classification: Classification,
     pub risk: Risk,
     pub score: u32,
+    /// Authenticode signature presence of the resolved module, when known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signed: Option<bool>,
+    /// Combined exploitability estimate in 0.0–1.0 (signals, not a guarantee).
+    pub exploitability: f32,
+    /// Bucketed confidence label derived from `exploitability`.
+    pub confidence: &'static str,
+    /// MITRE ATT&CK technique IDs this finding maps to.
+    pub attack: Vec<&'static str>,
     pub reasons: Vec<String>,
     pub remediation: Vec<String>,
 }
@@ -101,6 +110,13 @@ pub struct Report {
     /// Whether the directory holding the binary is writable by this process —
     /// a proxy for "an attacker could plant a DLL here".
     pub app_dir_writable: Option<bool>,
+    /// Low-privilege principals (Users, Authenticated Users, …) with write
+    /// access to the directory, from the ACL on Windows.
+    pub app_dir_writers: Vec<String>,
+    /// Whether a `<binary>.local` DotLocal redirection marker is present.
+    pub dotlocal: bool,
+    /// Whether the target image itself carries an Authenticode signature.
+    pub target_signed: bool,
     pub index_source: IndexSource,
     /// The live system directory used to resolve this binary's imports
     /// (System32 for x64, SysWOW64 for x86), or null when the baseline was used.
@@ -134,12 +150,15 @@ pub struct Counts {
 /// Analyze a parsed PE against the system index.
 ///
 /// `app_dir_files` is the set of lowercased file names sitting next to the
-/// binary; `writable` reports whether that directory is writable.
+/// binary; `exposure` reports how writable that directory is; `dotlocal` is
+/// whether a `<binary>.local` marker forces app-local resolution.
 pub fn analyze(
     pe: &PeInfo,
     index: &SystemIndex,
+    app_dir: &std::path::Path,
     app_dir_files: &HashSet<String>,
-    writable: Option<bool>,
+    exposure: &crate::acl::DirExposure,
+    dotlocal: bool,
     manifest: Option<&Manifest>,
 ) -> Report {
     let mut findings = Vec::new();
@@ -148,6 +167,12 @@ pub fn analyze(
     // SysWOW64 for a 32-bit image, System32 for a 64-bit one.
     let arch_index = index.arch_index(pe.is_64);
     let wow64_resolution = !pe.is_64 && index.syswow64().is_some();
+
+    // The directory is "exposed" if the probe succeeded or a risky principal
+    // holds write access. `writable` keeps the old Option for escalation logic.
+    let writable = exposure.writable;
+    let exposed = exposure.is_exposed();
+    let has_named_writers = !exposure.writers.is_empty();
 
     for dll in &pe.imports {
         let name = &dll.name;
@@ -229,47 +254,59 @@ pub fn analyze(
         };
 
         // The application directory is first in the search order for the EXE's
-        // own imports, so writability turns candidates into live exposure.
-        match (classification, writable) {
-            (Classification::PhantomDll, Some(true)) => {
+        // own imports, so write exposure turns candidates into live exposure.
+        match classification {
+            Classification::PhantomDll if exposed => {
                 risk = Risk::Critical;
-                reasons.push(
-                    "The application directory is writable, so the empty slot can be filled by a non-privileged user."
-                        .to_string(),
-                );
+                reasons.push(expose_reason(
+                    "so the empty slot can be filled",
+                    &exposure.writers,
+                ));
             }
-            (Classification::PhantomDll, Some(false)) => {
+            Classification::PhantomDll => {
                 reasons.push(
                     "The application directory is not writable by this process; confirm ACLs on the real deployment path."
                         .to_string(),
                 );
             }
-            (Classification::ShadowingDll, Some(true)) => {
+            Classification::ShadowingDll if exposed => {
                 risk = Risk::Critical;
-                reasons.push(
-                    "The application directory is writable, so the shadowing copy can be replaced."
-                        .to_string(),
-                );
+                reasons.push(expose_reason(
+                    "so the shadowing copy can be replaced",
+                    &exposure.writers,
+                ));
             }
-            (Classification::SystemDll, Some(true)) => {
+            Classification::SystemDll if exposed => {
                 risk = Risk::Low;
                 reasons.push(
                     "If SafeDllSearchMode is disabled or the import is loaded by relative path, a writable app directory can still win the search."
                         .to_string(),
                 );
             }
-            (Classification::ManifestRedirected, Some(true)) => {
-                // Still redirected, but a writable dir means the pinned
-                // private assembly can be swapped out.
+            Classification::ManifestRedirected if exposed => {
                 if risk < Risk::Medium {
                     risk = Risk::Medium;
                 }
-                reasons.push(
-                    "The application directory is writable, so even the manifest-pinned assembly can be replaced."
-                        .to_string(),
-                );
+                reasons.push(expose_reason(
+                    "so even the manifest-pinned assembly can be replaced",
+                    &exposure.writers,
+                ));
             }
             _ => {}
+        }
+
+        if dotlocal
+            && matches!(
+                classification,
+                Classification::PhantomDll
+                    | Classification::AppLocalDll
+                    | Classification::ManifestRedirected
+            )
+        {
+            reasons.push(
+                "A <binary>.local DotLocal marker forces app-local resolution for this process, strengthening the redirect."
+                    .to_string(),
+            );
         }
 
         if dll.kind == ImportKind::Delay && risk >= Risk::Low {
@@ -279,6 +316,35 @@ pub fn analyze(
             );
         }
 
+        // Signedness of the resolved module, for app-local candidates.
+        let signed = if present_locally {
+            crate::pe::file_is_signed(&app_dir.join(name))
+        } else {
+            None
+        };
+        if signed == Some(false)
+            && matches!(
+                classification,
+                Classification::AppLocalDll
+                    | Classification::ShadowingDll
+                    | Classification::ManifestRedirected
+            )
+        {
+            reasons.push(
+                "The app-local module is unsigned, so a replacement needs no valid signature to load."
+                    .to_string(),
+            );
+        }
+
+        let (exploitability, confidence) = grade(
+            classification,
+            exposed,
+            has_named_writers,
+            dotlocal,
+            signed,
+            dll.kind,
+        );
+        let attack = attack_techniques(classification, exposed, dotlocal);
         let remediation = remediation_for(classification, name);
         let score = base_score(risk);
 
@@ -288,6 +354,10 @@ pub fn analyze(
             classification,
             risk,
             score,
+            signed,
+            exploitability,
+            confidence,
+            attack,
             reasons,
             remediation,
         });
@@ -328,6 +398,9 @@ pub fn analyze(
         is_64: pe.is_64,
         imphash: pe.imphash.clone(),
         app_dir_writable: writable,
+        app_dir_writers: exposure.writers.clone(),
+        dotlocal,
+        target_signed: pe.signed,
         index_source: arch_index.source,
         system_dir: arch_index.dir_label(),
         wow64_resolution,
@@ -336,6 +409,87 @@ pub fn analyze(
         counts,
         findings,
     }
+}
+
+/// Build a writable-directory reason, naming ACL principals when known.
+fn expose_reason(tail: &str, writers: &[String]) -> String {
+    if writers.is_empty() {
+        format!("The application directory is writable, {tail} by a non-privileged user.")
+    } else {
+        format!(
+            "{} can write to the application directory, {tail}.",
+            writers.join(", ")
+        )
+    }
+}
+
+/// Combine signals into an exploitability estimate (0.0–1.0) and a label.
+fn grade(
+    c: Classification,
+    exposed: bool,
+    named_writers: bool,
+    dotlocal: bool,
+    signed: Option<bool>,
+    kind: ImportKind,
+) -> (f32, &'static str) {
+    let mut s: f32 = match c {
+        Classification::PhantomDll => 0.60,
+        Classification::ShadowingDll => 0.55,
+        Classification::ManifestRedirected => 0.35,
+        Classification::AppLocalDll => 0.20,
+        Classification::SystemDll => 0.05,
+        Classification::KnownDll | Classification::ApiSet => 0.0,
+    };
+    if s == 0.0 {
+        return (0.0, "none");
+    }
+    if exposed {
+        s += if named_writers { 0.35 } else { 0.28 };
+    }
+    if dotlocal
+        && matches!(
+            c,
+            Classification::PhantomDll
+                | Classification::AppLocalDll
+                | Classification::ManifestRedirected
+        )
+    {
+        s += 0.10;
+    }
+    if signed == Some(false) {
+        s += 0.10;
+    }
+    if kind == ImportKind::Delay {
+        s += 0.03;
+    }
+    let s = s.clamp(0.0, 1.0);
+    let label = if s >= 0.75 {
+        "high"
+    } else if s >= 0.45 {
+        "medium"
+    } else {
+        "low"
+    };
+    (round2(s), label)
+}
+
+fn round2(x: f32) -> f32 {
+    (x * 100.0).round() / 100.0
+}
+
+/// Map a finding to MITRE ATT&CK sub-techniques of T1574 (Hijack Execution Flow).
+fn attack_techniques(c: Classification, exposed: bool, dotlocal: bool) -> Vec<&'static str> {
+    let mut t = Vec::new();
+    match c {
+        Classification::PhantomDll | Classification::ShadowingDll => t.push("T1574.001"),
+        Classification::ManifestRedirected | Classification::AppLocalDll => t.push("T1574.002"),
+        Classification::SystemDll if exposed => t.push("T1574.001"),
+        _ => {}
+    }
+    if dotlocal && !t.contains(&"T1574.002") {
+        t.push("T1574.002");
+    }
+    t
 }
 
 fn base_score(risk: Risk) -> u32 {

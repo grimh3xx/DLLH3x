@@ -7,6 +7,7 @@
 //! is actionable for both defenders hardening software and authorized
 //! assessors writing up findings.
 
+mod acl;
 mod analysis;
 mod cli;
 mod manifest;
@@ -115,14 +116,17 @@ fn main() -> ExitCode {
 
         let dir = target.parent().unwrap_or(Path::new("."));
         let app_dir_files = list_dir_lower(dir);
-        let writable = probe_writable(dir);
+        let exposure = acl::inspect_dir(dir);
+        let dotlocal = acl::has_dotlocal(target);
         let manifest = manifest::load(target);
 
         reports.push(analyze(
             &pe,
             &index,
+            dir,
             &app_dir_files,
-            writable,
+            &exposure,
+            dotlocal,
             manifest.as_ref(),
         ));
     }
@@ -212,29 +216,6 @@ fn list_dir_lower(dir: &Path) -> HashSet<String> {
         }
     }
     set
-}
-
-/// Best-effort writability probe: try to create and remove a hidden temp file.
-/// Returns None if the directory cannot be read at all.
-fn probe_writable(dir: &Path) -> Option<bool> {
-    if !dir.is_dir() {
-        return None;
-    }
-    let probe = dir.join(".dllh3x_write_probe.tmp");
-    match std::fs::File::create(&probe) {
-        Ok(_) => {
-            let _ = std::fs::remove_file(&probe);
-            Some(true)
-        }
-        Err(e) => {
-            if e.kind() == std::io::ErrorKind::PermissionDenied {
-                Some(false)
-            } else {
-                // Read-only filesystem, missing dir, etc.: inconclusive.
-                None
-            }
-        }
-    }
 }
 
 fn print_banner() {

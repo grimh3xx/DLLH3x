@@ -40,6 +40,11 @@ pub struct PeInfo {
     pub is_64: bool,
     pub machine: String,
     pub imphash: Option<String>,
+    /// Whether the image carries an embedded Authenticode signature (the
+    /// certificate table is present). This is presence, not trust validation —
+    /// verifying the chain requires Windows — but an unsigned app-local module
+    /// is a materially easier module to replace.
+    pub signed: bool,
     pub imports: Vec<ImportedDll>,
 }
 
@@ -88,15 +93,36 @@ impl PeInfo {
         }
 
         let imphash = compute_imphash(&pe);
+        let signed = has_certificate_table(&pe);
 
         Ok(PeInfo {
             path: path.to_path_buf(),
             is_64: pe.is_64,
             machine: machine_string(pe.header.coff_header.machine),
             imphash,
+            signed,
             imports: dlls,
         })
     }
+}
+
+/// True if the PE has a non-empty certificate (Authenticode) table.
+fn has_certificate_table(pe: &PE) -> bool {
+    pe.header
+        .optional_header
+        .as_ref()
+        .and_then(|oh| oh.data_directories.get_certificate_table())
+        .map(|d| d.virtual_address != 0 && d.size != 0)
+        .unwrap_or(false)
+}
+
+/// Lightweight signedness probe for an arbitrary PE on disk, used to grade
+/// app-local modules without a full import parse. `None` when the file cannot
+/// be read or parsed as a PE.
+pub fn file_is_signed(path: &Path) -> Option<bool> {
+    let bytes = std::fs::read(path).ok()?;
+    let pe = PE::parse(&bytes).ok()?;
+    Some(has_certificate_table(&pe))
 }
 
 /// Render a single imported symbol the way imphash tooling expects: either the

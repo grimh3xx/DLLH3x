@@ -53,4 +53,12 @@ pub struct Cli {
     /// Exit non-zero if any finding reaches this risk (for CI gates).
     #[arg(long, value_name = "LEVEL")]
     pub fail_on: Option<String>,
+
+    /// Print the transitive dependency graph as an ASCII tree.
+    #[arg(long)]
+    pub graph: bool,
+
+    /// Write the dependency graph to a Graphviz DOT file.
+    #[arg(long, value_name = "FILE")]
+    pub dot: Option<String>,
 }

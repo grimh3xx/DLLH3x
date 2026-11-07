@@ -125,6 +125,10 @@ pub struct Report {
     pub wow64_resolution: bool,
     /// Summary of the SxS / activation-context manifest, if one was found.
     pub manifest: Option<ManifestSummary>,
+    /// Transitive hijack chains: a phantom/shadowing slot reached through one or
+    /// more app-local modules — the deep findings a direct scan never surfaces.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub transitive_chains: Vec<crate::graph::Chain>,
     pub surface_score: u32,
     pub counts: Counts,
     pub findings: Vec<Finding>,
@@ -392,6 +396,11 @@ pub fn analyze(
         }
     });
 
+    // Transitive dependency-graph analysis: find hijack points reached through
+    // app-local modules (depth >= 1), which the flat scan above cannot see.
+    let graph_roots = crate::graph::build(pe, index, app_dir, app_dir_files, manifest);
+    let transitive_chains = crate::graph::chains(&graph_roots);
+
     Report {
         target: pe.path.display().to_string(),
         arch: pe.machine.clone(),
@@ -405,6 +414,7 @@ pub fn analyze(
         system_dir: arch_index.dir_label(),
         wow64_resolution,
         manifest: manifest_summary,
+        transitive_chains,
         surface_score: surface_score(&counts),
         counts,
         findings,

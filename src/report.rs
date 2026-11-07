@@ -136,6 +136,31 @@ pub fn print_terminal(report: &Report, min_risk: Risk, verbose: bool) {
         }
     }
 
+    if !report.transitive_chains.is_empty() {
+        println!();
+        println!("    {}", "transitive hijack chains:".bold());
+        for ch in &report.transitive_chains {
+            let arrow = " → ".dimmed().to_string();
+            let path = ch
+                .path
+                .iter()
+                .map(|p| p.as_str())
+                .collect::<Vec<_>>()
+                .join(&arrow);
+            let leaf = match ch.leaf {
+                crate::graph::Resolution::Phantom => ch.leaf.label().bright_red().to_string(),
+                _ => ch.leaf.label().yellow().to_string(),
+            };
+            println!(
+                "      {} {}  [{}, depth {}]",
+                "↳".bright_red(),
+                path,
+                leaf,
+                ch.depth,
+            );
+        }
+    }
+
     println!();
     print_summary(report);
     println!();

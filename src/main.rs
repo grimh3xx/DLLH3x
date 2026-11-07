@@ -10,6 +10,7 @@
 mod acl;
 mod analysis;
 mod cli;
+mod graph;
 mod manifest;
 mod pe;
 mod report;
@@ -119,6 +120,25 @@ fn main() -> ExitCode {
         let exposure = acl::inspect_dir(dir);
         let dotlocal = acl::has_dotlocal(target);
         let manifest = manifest::load(target);
+
+        // Optional dependency-graph rendering (ASCII tree / Graphviz DOT).
+        if args.graph || args.dot.is_some() {
+            let roots = graph::build(&pe, &index, dir, &app_dir_files, manifest.as_ref());
+            if args.graph && !args.json {
+                println!("\n  dependency graph — {}", target.display().bold());
+                for line in graph::render_tree(&roots).lines() {
+                    println!("    {line}");
+                }
+            }
+            if let Some(path) = &args.dot {
+                let dot = graph::render_dot(&target.display().to_string(), &roots);
+                if let Err(e) = std::fs::write(path, dot) {
+                    eprintln!("failed to write {path}: {e}");
+                } else if !args.json {
+                    println!("  {} graph written to {}", "✓".green(), path.bold());
+                }
+            }
+        }
 
         reports.push(analyze(
             &pe,

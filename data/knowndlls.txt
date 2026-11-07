@@ -1,0 +1,43 @@
+# KnownDLLs — modules mapped from the \KnownDlls object directory.
+# These are always resolved from System32 regardless of the application
+# directory, so they are NOT hijackable via search-order abuse.
+# Source: HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\KnownDLLs
+# plus their known forward dependencies. Names are lowercase, no extension.
+advapi32
+clbcatq
+combase
+comctl32
+comdlg32
+coml2
+difxapi
+gdi32
+gdiplus
+imagehlp
+imm32
+kernel32
+kernelbase
+msasn1
+msctf
+msvcp_win
+msvcrt
+normaliz
+ntdll
+nsi
+ole32
+oleaut32
+powrprof
+profapi
+psapi
+rpcrt4
+sechost
+setupapi
+shcore
+shell32
+shlwapi
+user32
+wintrust
+wldap32
+ws2_32
+wow64
+wow64cpu
+wow64win

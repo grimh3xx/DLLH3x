@@ -1,0 +1,33 @@
+[package]
+name = "dllh3x"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.74"
+authors = ["grimh3xx"]
+description = "DLLH3x — read-only DLL search-order / hijacking auditor for Windows PE binaries"
+repository = "https://github.com/grimh3xx/DLLH3x"
+license = "MIT"
+keywords = ["security", "pe", "dll-hijacking", "audit", "blue-team"]
+categories = ["command-line-utilities", "development-tools"]
+readme = "README.md"
+
+[[bin]]
+name = "dllh3x"
+path = "src/main.rs"
+
+[dependencies]
+goblin = "0.8"
+clap = { version = "4.5", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+owo-colors = { version = "4", features = ["supports-colors"] }
+walkdir = "2"
+anyhow = "1"
+md5 = "0.7"
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true
+codegen-units = 1
+panic = "abort"

@@ -10,6 +10,7 @@
 mod acl;
 mod analysis;
 mod cli;
+mod formats;
 mod graph;
 mod manifest;
 mod pe;
@@ -55,7 +56,11 @@ fn main() -> ExitCode {
         None => None,
     };
 
-    if !args.json {
+    // Structured outputs own stdout, so keep the banner and the index summary
+    // (and the graph/dot notices below) out of it.
+    let structured_out = args.json || args.sarif;
+
+    if !structured_out {
         print_banner();
     }
 
@@ -63,7 +68,7 @@ fn main() -> ExitCode {
         args.system_root.as_deref().map(Path::new),
         args.wow64_root.as_deref().map(Path::new),
     );
-    if !args.json {
+    if !structured_out {
         let sys32 = index.system32();
         let where_from = sys32
             .dir_label()
@@ -124,7 +129,7 @@ fn main() -> ExitCode {
         // Optional dependency-graph rendering (ASCII tree / Graphviz DOT).
         if args.graph || args.dot.is_some() {
             let roots = graph::build(&pe, &index, dir, &app_dir_files, manifest.as_ref());
-            if args.graph && !args.json {
+            if args.graph && !structured_out {
                 println!("\n  dependency graph — {}", target.display().bold());
                 for line in graph::render_tree(&roots).lines() {
                     println!("    {line}");
@@ -134,7 +139,7 @@ fn main() -> ExitCode {
                 let dot = graph::render_dot(&target.display().to_string(), &roots);
                 if let Err(e) = std::fs::write(path, dot) {
                     eprintln!("failed to write {path}: {e}");
-                } else if !args.json {
+                } else if !structured_out {
                     println!("  {} graph written to {}", "✓".green(), path.bold());
                 }
             }
@@ -156,31 +161,38 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     }
 
-    // Emit.
-    let rendered = if args.json {
-        report::to_json(&reports)
-    } else {
-        String::new()
-    };
+    let version = env!("CARGO_PKG_VERSION");
 
-    if let Some(path) = &args.output {
-        let content = if args.json {
-            rendered.clone()
-        } else {
-            report::to_json(&reports)
-        };
-        if let Err(e) = std::fs::write(path, content) {
+    // Optional side output: a self-contained HTML report, independent of the
+    // primary rendering.
+    if let Some(path) = &args.html {
+        let html = formats::to_html(&reports, version);
+        if let Err(e) = std::fs::write(path, html) {
             eprintln!("failed to write {path}: {e}");
             return ExitCode::from(2);
         }
-        if !args.json {
-            println!("  {} report written to {}", "✓".green(), path.bold());
+        if !args.json && !args.sarif {
+            println!("  {} HTML report written to {}", "✓".green(), path.bold());
         }
     }
 
-    if args.json {
-        if args.output.is_none() {
-            println!("{rendered}");
+    // Primary rendering: SARIF > JSON > terminal.
+    let structured = if args.sarif {
+        Some(formats::to_sarif(&reports, version))
+    } else if args.json {
+        Some(report::to_json(&reports))
+    } else {
+        None
+    };
+
+    if let Some(content) = structured {
+        if let Some(path) = &args.output {
+            if let Err(e) = std::fs::write(path, &content) {
+                eprintln!("failed to write {path}: {e}");
+                return ExitCode::from(2);
+            }
+        } else {
+            println!("{content}");
         }
     } else {
         for r in &reports {

@@ -24,6 +24,14 @@ pub struct Cli {
     #[arg(short, long)]
     pub json: bool,
 
+    /// Emit SARIF 2.1.0 (for GitHub code scanning) instead of the terminal report.
+    #[arg(long)]
+    pub sarif: bool,
+
+    /// Also write a self-contained HTML report to this file.
+    #[arg(long, value_name = "FILE")]
+    pub html: Option<String>,
+
     /// Write the report to a file instead of stdout.
     #[arg(short, long, value_name = "FILE")]
     pub output: Option<String>,

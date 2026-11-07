@@ -16,10 +16,12 @@ generates, patches, plants, proxies, or executes a module.
 ## What it is
 
 **DLLH3x** statically audits a PE's **import** and **delay-import** tables, models
-the **Windows DLL search order**, and reports which dependencies an attacker could
-satisfy by dropping a module into a directory they can write to. Every finding
-comes with a concrete remediation, so the output is actionable for defenders
-hardening their own software *and* for authorized assessors writing up findings.
+the **Windows DLL search order**, follows the dependency tree for **transitive**
+hijack chains, and reports which dependencies an attacker could satisfy by
+dropping a module into a directory they can write to — graded by exploitability
+and mapped to MITRE ATT&CK. Every finding comes with a concrete remediation, so
+the output is actionable for defenders hardening their own software *and* for
+authorized assessors writing up findings.
 
 It is a **diagnostic tool**. DLLH3x opens files read-only and **never**
 generates, patches, plants, proxies, or executes a DLL. There is no payload path
@@ -41,15 +43,23 @@ in this repository by design.
   mis-flagged as phantoms — and still flagged when the directory is writable.
 - **Live or baseline system index** — reads a real `System32` on Windows (or via
   `--system-root` from WSL); falls back to a labelled built-in baseline off-Windows.
-- **Writability probe** — flags when the binary's directory is writable, which is
-  what turns a candidate into live exposure.
+- **Transitive hijack chains** — follows the dependency tree through app-local
+  modules to find phantom/shadowing slots **at depth ≥ 1** that a direct scan
+  never surfaces (`app.exe → plugin.dll → codec.dll`). `--graph` renders the
+  ASCII tree; `--dot` exports Graphviz.
+- **Write exposure (ACL)** — on Windows, parses `icacls` to name the
+  low-privilege principals (`BUILTIN\Users`, `Authenticated Users`, …) that can
+  write to the install directory; elsewhere falls back to a write probe.
+- **Signature & DotLocal signals** — detects unsigned app-local modules
+  (Authenticode certificate table) and `<binary>.local` DotLocal redirection.
+- **Exploitability + MITRE ATT&CK** — a 0–1 confidence per finding combining
+  every signal, mapped to `T1574.001` (search-order) / `T1574.002` (side-loading).
 - **Risk scoring** — per-module risk (`info`→`critical`) plus a 0–100 surface
-  score for the whole binary.
-- **imphash** — Mandiant-style import hash for triage and threat-intel pivoting.
-- **Two outputs** — a colored terminal report and machine-readable JSON.
-- **CI gate** — `--fail-on <level>` exits non-zero so a build can block on
-  regressions.
-- **Batch mode** — scan a whole directory tree with `--recursive`.
+  score for the whole binary. **imphash** for triage and threat-intel pivoting.
+- **Four outputs** — colored terminal, JSON, **SARIF 2.1.0** (GitHub code
+  scanning), and a self-contained **HTML** report in the house theme.
+- **CI gate & batch** — `--fail-on <level>` blocks a build; `--recursive` sweeps
+  a whole install tree.
 
 ## Install
 
@@ -67,10 +77,14 @@ dllh3x <PATH> [OPTIONS]
 
   -r, --recursive         recurse into directories
   -j, --json              emit JSON instead of the terminal report
-  -o, --output <FILE>     write the (JSON) report to a file
+      --sarif             emit SARIF 2.1.0 (for GitHub code scanning)
+      --html <FILE>       also write a self-contained HTML report
+  -o, --output <FILE>     write the (JSON/SARIF) report to a file
       --min-risk <LEVEL>  only show findings >= info|low|medium|high|critical  [default: low]
       --system-root <DIR> live System32 for 64-bit targets (WSL: /mnt/c/Windows/System32)
       --wow64-root <DIR>  live SysWOW64 for 32-bit targets (WSL: /mnt/c/Windows/SysWOW64)
+      --graph             print the transitive dependency graph (ASCII tree)
+      --dot <FILE>        export the dependency graph as Graphviz DOT
       --fail-on <LEVEL>   exit non-zero if any finding reaches this risk (CI gate)
   -v, --verbose           show every reason and remediation line
       --no-color          disable ANSI colors
@@ -89,8 +103,11 @@ dllh3x ./app.exe --system-root /mnt/c/Windows/System32 \
 # Sweep an install tree and fail a pipeline on any critical finding
 dllh3x "C:\Program Files\Vendor" --recursive --fail-on critical
 
-# Machine-readable report for a dashboard
-dllh3x ./app.exe --json -o report.json
+# See deep hijack chains through app-local modules
+dllh3x "C:\Program Files\Vendor" --graph
+
+# SARIF for GitHub code scanning, plus a shareable HTML report
+dllh3x "C:\Program Files\Vendor" --recursive --sarif -o dllh3x.sarif --html report.html
 ```
 
 ## How it works
@@ -119,6 +136,31 @@ and resolves each binary against the correct system directory — pass
 of falling back to the System32 name set. Findings tagged `[wow64]` were resolved
 this way.
 
+### Transitive chains (the part other scanners miss)
+
+Direct imports are only the first layer. An app-local module loads *its own*
+imports from the same application directory, so a hijackable slot can sit two or
+three hops deep where no direct scan looks:
+
+```text
+app.exe
+ └─ plugin.dll   (app-local, unsigned)
+      └─ codec.dll   ← phantom (depth 2)
+```
+
+DLLH3x walks the tree through app-local / shadowing / manifest-redirected modules
+(system and KnownDLL modules resolve their own dependencies from the protected
+system directory, so they are leaves) and reports every hijack point reached at
+depth ≥ 1 as a **transitive chain**. `--graph` prints the whole tree; `--dot`
+exports it for Graphviz.
+
+### Exploitability & ATT&CK
+
+Beyond a risk bucket, each finding gets an **exploitability** estimate (0–1)
+combining classification, write exposure, named ACL writers, DotLocal, signature
+state and delay-load, plus a MITRE ATT&CK mapping — `T1574.001` (DLL Search-Order
+Hijacking) or `T1574.002` (DLL Side-Loading).
+
 ### Risk scoring
 
 Each finding carries a score; the binary's **surface score** (0–100) is weighted
@@ -133,10 +175,14 @@ it. A clean, fully-system-resolved binary scores near zero.
   "arch": "x64 (AMD64)",
   "imphash": "8cabe7ef2165f2dc825863391fe3251c",
   "app_dir_writable": true,
+  "app_dir_writers": ["BUILTIN\\Users"],
+  "dotlocal": false,
+  "target_signed": true,
   "index_source": "live",
   "system_dir": "C:\\Windows\\System32",
   "wow64_resolution": false,
   "manifest": { "source": "embedded", "redirected_files": [], "dependencies": ["Microsoft.Windows.Common-Controls"] },
+  "transitive_chains": [ { "path": ["plugin.dll", "codec.dll"], "leaf": "phantom", "depth": 1 } ],
   "surface_score": 100,
   "counts": { "critical": 1, "high": 0, "medium": 0, "low": 34, "info": 22, "total": 57 },
   "findings": [
@@ -146,7 +192,10 @@ it. A clean, fully-system-resolved binary scores near zero.
       "classification": "phantom_dll",
       "risk": "critical",
       "score": 95,
-      "reasons": ["ffmpeg.dll is not in System32 and is absent from the application directory ..."],
+      "exploitability": 0.91,
+      "confidence": "high",
+      "attack": ["T1574.001"],
+      "reasons": ["ffmpeg.dll is not in the system directory (System32) and is absent from the application directory ..."],
       "remediation": ["Do not import ffmpeg.dll by bare name; resolve it with an explicit, validated path.", "..."]
     }
   ]
@@ -169,8 +218,12 @@ project.
 
 - [x] SysWOW64 resolution for 32-bit targets
 - [x] SxS / activation-context (manifest) `<file>` redirection awareness
-- [ ] SARIF output for code-scanning integrations
-- [ ] Optional authenticode signature check on resolved modules
+- [x] Transitive dependency-graph hijack chains (`--graph` / `--dot`)
+- [x] Write-exposure ACLs, Authenticode signal, DotLocal detection
+- [x] Exploitability scoring + MITRE ATT&CK mapping
+- [x] SARIF output + self-contained HTML report
+- [ ] Full Authenticode **trust-chain** validation (Windows runtime)
+- [ ] SxS `<dependentAssembly>` WinSxS resolution
 
 ## License
 
